@@ -1,0 +1,229 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>DYMO Local Service Test (LabelWriter 450/550)</title>
+  <style>
+    body { font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif; margin: 20px; }
+    h1 { margin: 0 0 8px; }
+    .row { display: flex; gap: 10px; flex-wrap: wrap; margin: 10px 0 16px; }
+    button { padding: 10px 12px; cursor: pointer; }
+    input { padding: 10px 12px; min-width: 340px; }
+    .card { border: 1px solid #ddd; border-radius: 10px; padding: 12px; margin: 10px 0; }
+    .ok { color: #0a7a0a; }
+    .bad { color: #b00020; }
+    .muted { color: #666; }
+    pre { white-space: pre-wrap; word-break: break-word; background: #f7f7f7; padding: 10px; border-radius: 8px; }
+    code { background: #f2f2f2; padding: 2px 6px; border-radius: 6px; }
+    .small { font-size: 12px; }
+  </style>
+</head>
+<body>
+  <h1>DYMO Local Service Test</h1>
+  <div class="muted">
+    This page checks whether the DYMO local web service is reachable (often on <code>https://127.0.0.1:41951</code>).
+    It also helps you tell the difference between: service not running, TLS/cert issues, and CORS blocking.
+  </div>
+
+  <div class="card">
+    <div class="row">
+      <label>
+        Base URL:
+        <input id="baseUrl" value="https://127.0.0.1:41951" />
+      </label>
+      <button id="runAll">Run all tests</button>
+      <button id="clear">Clear</button>
+    </div>
+
+    <div class="small muted">
+      Tip: also try <code>https://localhost:41951</code> if 127.0.0.1 fails, or vice versa.
+    </div>
+  </div>
+
+  <div class="card">
+    <h3>Results</h3>
+    <div id="results"></div>
+  </div>
+
+  <div class="card">
+    <h3>Console-friendly log</h3>
+    <pre id="log"></pre>
+  </div>
+
+  <script>
+    const resultsEl = document.getElementById("results");
+    const logEl = document.getElementById("log");
+    const baseUrlEl = document.getElementById("baseUrl");
+
+    function log(msg) {
+      const line = `[${new Date().toLocaleTimeString()}] ${msg}\n`;
+      logEl.textContent += line;
+      console.log(msg);
+    }
+
+    function escapeHtml(s) {
+      return String(s).replace(/[&<>"']/g, c => ({
+        "&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"
+      }[c]));
+    }
+
+    function addResult(title, status, details) {
+      const ok = status === "OK";
+      const div = document.createElement("div");
+      div.className = "card";
+      div.innerHTML = `
+        <div><strong>${escapeHtml(title)}</strong> — <span class="${ok ? "ok" : "bad"}">${escapeHtml(status)}</span></div>
+        ${details ? `<pre class="small">${escapeHtml(details)}</pre>` : ""}
+      `;
+      resultsEl.appendChild(div);
+    }
+
+    function clearOutput() {
+      resultsEl.innerHTML = "";
+      logEl.textContent = "";
+    }
+
+    async function fetchText(url, opts = {}) {
+      const controller = new AbortController();
+      const t = setTimeout(() => controller.abort(), opts.timeoutMs ?? 3500);
+      try {
+        const res = await fetch(url, {
+          method: opts.method ?? "GET",
+          mode: opts.mode ?? "cors",
+          cache: "no-store",
+          signal: controller.signal,
+          // credentials not needed for localhost; keep default
+        });
+
+        // If mode is "no-cors", res is "opaque" and you can't read status/body.
+        const info = {
+          type: res.type,
+          ok: res.ok,
+          status: res.status,
+          statusText: res.statusText
+        };
+
+        let body = "";
+        try {
+          body = await res.text();
+        } catch (_) {
+          // opaque responses can't be read
+        }
+        return { info, body };
+      } finally {
+        clearTimeout(t);
+      }
+    }
+
+    function openInNewTab(url) {
+      window.open(url, "_blank", "noopener,noreferrer");
+    }
+
+    // Endpoints typically used in DYMO DLS
+    function endpoints(base) {
+      const b = base.replace(/\/+$/, "");
+      return {
+        check: `${b}/DYMO/DLS/Printing/Check`,
+        statusConnected: `${b}/DYMO/DLS/Printing/StatusConnected`,
+        getPrinters: `${b}/DYMO/DLS/Printing/GetPrinters`,
+      };
+    }
+
+    function hintForError(err) {
+      const s = String(err || "");
+      if (s.includes("AbortError")) return "Timed out (service may be down or blocked).";
+      if (s.includes("Failed to fetch")) return "Network/TLS/CORS error (service down, cert issue, or blocked by browser).";
+      return s;
+    }
+
+    async function testDirectNav(url, name) {
+      // Direct navigation test: we can’t automatically read the page contents reliably,
+      // but opening the endpoint in a new tab helps identify cert errors fast.
+      addResult(`${name} (manual open)`, "INFO",
+        `Click to open: ${url}\nIf you see a certificate warning or it won’t load, that’s a TLS/cert/service issue.`);
+      log(`Manual open suggested for ${name}: ${url}`);
+    }
+
+    async function testFetchCors(url, name) {
+      try {
+        const { info, body } = await fetchText(url, { mode: "cors", timeoutMs: 3500 });
+        addResult(`${name} (fetch, CORS)`, "OK",
+          `Response type: ${info.type}\nStatus: ${info.status} ${info.statusText}\nBody (first 400 chars):\n${body.slice(0, 400)}`);
+        log(`${name} CORS fetch OK: status ${info.status}, type ${info.type}`);
+        return { ok: true, info, body };
+      } catch (err) {
+        addResult(`${name} (fetch, CORS)`, "FAIL", hintForError(err));
+        log(`${name} CORS fetch FAIL: ${hintForError(err)}`);
+        return { ok: false, err };
+      }
+    }
+
+    async function testFetchNoCors(url, name) {
+      // no-cors can confirm “something responded” but you won’t get status/body.
+      try {
+        const { info } = await fetchText(url, { mode: "no-cors", timeoutMs: 3500 });
+        addResult(`${name} (fetch, no-cors)`, "OK",
+          `Response type: ${info.type}\nNote: opaque responses can’t be inspected. If CORS test fails but this succeeds, it’s likely a CORS restriction.`);
+        log(`${name} no-cors fetch OK: type ${info.type}`);
+        return { ok: true, info };
+      } catch (err) {
+        addResult(`${name} (fetch, no-cors)`, "FAIL", hintForError(err));
+        log(`${name} no-cors fetch FAIL: ${hintForError(err)}`);
+        return { ok: false, err };
+      }
+    }
+
+    async function runAll() {
+      clearOutput();
+      const base = baseUrlEl.value.trim();
+      const ep = endpoints(base);
+
+      addResult("Base URL", "INFO", base);
+
+      // 1) Suggest manual open in a new tab for cert/service debugging
+      await testDirectNav(ep.check, "Check");
+      await testDirectNav(ep.statusConnected, "StatusConnected");
+      await testDirectNav(ep.getPrinters, "GetPrinters");
+
+      // 2) Automated fetch tests (CORS + no-cors)
+      const a = await testFetchCors(ep.check, "Check");
+      const b = await testFetchCors(ep.statusConnected, "StatusConnected");
+      const c = await testFetchCors(ep.getPrinters, "GetPrinters");
+
+      // 3) If CORS fetch fails, try no-cors to help differentiate
+      if (!a.ok) await testFetchNoCors(ep.check, "Check");
+      if (!b.ok) await testFetchNoCors(ep.statusConnected, "StatusConnected");
+      if (!c.ok) await testFetchNoCors(ep.getPrinters, "GetPrinters");
+
+      // 4) Helpful interpretation
+      const interp = [];
+      interp.push("How to interpret:");
+      interp.push("- If manual-open fails (tab shows cert error or won’t load): DYMO local service not running OR TLS/cert issue.");
+      interp.push("- If manual-open works but CORS fetch fails: browser is blocking cross-origin calls (CORS). A Chrome/Edge extension or native bridge is usually needed.");
+      interp.push("- If GetPrinters works: DYMO service sees printers (good sign).");
+      interp.push("");
+      interp.push("Quick actions:");
+      interp.push("- Try switching Base URL between https://127.0.0.1:41951 and https://localhost:41951");
+      interp.push("- Confirm DYMO Connect is installed and its Web Service is running in the system tray.");
+      addResult("Interpretation", "INFO", interp.join("\n"));
+
+      log("All tests completed.");
+    }
+
+    document.getElementById("runAll").addEventListener("click", runAll);
+    document.getElementById("clear").addEventListener("click", clearOutput);
+
+    // Convenience: make manual open clickable by double-clicking the result cards
+    resultsEl.addEventListener("dblclick", (e) => {
+      const pre = e.target.closest(".card")?.querySelector("pre");
+      if (!pre) return;
+      const txt = pre.textContent || "";
+      const match = txt.match(/Click to open:\s*(https?:\/\/[^\s]+)/);
+      if (match) openInNewTab(match[1]);
+    });
+  </script>
+
+<script src="https://static.app/js/static.js" type="text/javascript"></script>
+</body>
+</html>
