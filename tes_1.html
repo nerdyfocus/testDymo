@@ -1,0 +1,31 @@
+<!doctype html>
+<html>
+<body>
+  <button id="test">Test DYMO Service</button>
+  <pre id="out"></pre>
+
+  <script>
+    const out = document.getElementById('out');
+
+    async function ping(url) {
+      try {
+        const r = await fetch(url, { method: 'GET' });
+        const t = await r.text();
+        return { ok: r.ok, status: r.status, text: t.slice(0, 300) };
+      } catch (e) {
+        return { ok: false, error: String(e) };
+      }
+    }
+
+    document.getElementById('test').onclick = async () => {
+      out.textContent = "Testing...\n";
+      const a = await ping("https://127.0.0.1:41951/DYMO/DLS/Printing/Check");
+      out.textContent += "127.0.0.1 check:\n" + JSON.stringify(a, null, 2) + "\n\n";
+      const b = await ping("https://localhost:41951/DYMO/DLS/Printing/Check");
+      out.textContent += "localhost check:\n" + JSON.stringify(b, null, 2);
+    };
+  </script>
+
+<script src="https://static.app/js/static.js" type="text/javascript"></script>
+</body>
+</html>
